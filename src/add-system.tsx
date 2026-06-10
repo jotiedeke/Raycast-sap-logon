@@ -1,11 +1,20 @@
 import { Action, ActionPanel, Form, showToast, Toast, useNavigation } from "@raycast/api";
 import { useState } from "react";
-import { addSAPSystem, validateClient, validateInstanceNumber } from "./utils";
+import { SAPSystemFormValues } from "./types";
+import {
+  addSAPSystem,
+  LANGUAGES,
+  SYSTEM_TYPE_LABELS,
+  SYSTEM_TYPES,
+  validateClient,
+  validateInstanceNumber,
+} from "./utils";
 
 export default function Command() {
   const { pop } = useNavigation();
   const [isLoading, setIsLoading] = useState(false);
 
+  const [customerNameError, setCustomerNameError] = useState<string | undefined>();
   const [systemIdError, setSystemIdError] = useState<string | undefined>();
   const [serverError, setServerError] = useState<string | undefined>();
   const [instanceError, setInstanceError] = useState<string | undefined>();
@@ -13,18 +22,14 @@ export default function Command() {
   const [usernameError, setUsernameError] = useState<string | undefined>();
   const [passwordError, setPasswordError] = useState<string | undefined>();
 
-  async function handleSubmit(values: {
-    systemId: string;
-    applicationServer: string;
-    instanceNumber: string;
-    client: string;
-    username: string;
-    password: string;
-    language: string;
-  }) {
+  async function handleSubmit(values: SAPSystemFormValues) {
     // Validate required fields
     let hasError = false;
 
+    if (!values.customerName.trim()) {
+      setCustomerNameError("Customer name is required");
+      hasError = true;
+    }
     if (!values.systemId.trim()) {
       setSystemIdError("System ID is required");
       hasError = true;
@@ -69,12 +74,14 @@ export default function Command() {
     try {
       await addSAPSystem(
         {
+          customerName: values.customerName.trim(),
           systemId: values.systemId.trim().toUpperCase(),
+          systemType: values.systemType,
           applicationServer: values.applicationServer.trim(),
           instanceNumber: values.instanceNumber.trim(),
           client: values.client.trim(),
           username: values.username.trim(),
-          language: values.language || "EN",
+          language: values.language,
         },
         values.password,
       );
@@ -113,6 +120,15 @@ export default function Command() {
       />
 
       <Form.TextField
+        id="customerName"
+        title="Customer"
+        placeholder="Acme Corp, Müller GmbH..."
+        error={customerNameError}
+        onChange={() => setCustomerNameError(undefined)}
+        info="The customer this system belongs to. Used to group and search systems."
+      />
+
+      <Form.TextField
         id="systemId"
         title="System ID"
         placeholder="PRD, DEV, QAS..."
@@ -120,6 +136,12 @@ export default function Command() {
         onChange={() => setSystemIdError(undefined)}
         info="The SAP System ID (SID), typically 3 characters"
       />
+
+      <Form.Dropdown id="systemType" title="System Type" defaultValue="E">
+        {SYSTEM_TYPES.map((type) => (
+          <Form.Dropdown.Item key={type} value={type} title={`${type} – ${SYSTEM_TYPE_LABELS[type]}`} />
+        ))}
+      </Form.Dropdown>
 
       <Form.TextField
         id="applicationServer"
@@ -169,19 +191,16 @@ export default function Command() {
 
       <Form.Separator />
 
-      <Form.Dropdown id="language" title="Language" defaultValue="EN">
-        <Form.Dropdown.Item value="EN" title="English (EN)" />
-        <Form.Dropdown.Item value="DE" title="German (DE)" />
-        <Form.Dropdown.Item value="FR" title="French (FR)" />
-        <Form.Dropdown.Item value="ES" title="Spanish (ES)" />
-        <Form.Dropdown.Item value="IT" title="Italian (IT)" />
-        <Form.Dropdown.Item value="PT" title="Portuguese (PT)" />
-        <Form.Dropdown.Item value="NL" title="Dutch (NL)" />
-        <Form.Dropdown.Item value="PL" title="Polish (PL)" />
-        <Form.Dropdown.Item value="RU" title="Russian (RU)" />
-        <Form.Dropdown.Item value="ZH" title="Chinese (ZH)" />
-        <Form.Dropdown.Item value="JA" title="Japanese (JA)" />
-        <Form.Dropdown.Item value="KO" title="Korean (KO)" />
+      <Form.Dropdown
+        id="language"
+        title="Language"
+        defaultValue="EN"
+        info="Choose 'Ask on connect' to be prompted for the language each time you connect."
+      >
+        <Form.Dropdown.Item value="" title="Ask on connect (no default)" />
+        {LANGUAGES.map((lang) => (
+          <Form.Dropdown.Item key={lang.value} value={lang.value} title={lang.title} />
+        ))}
       </Form.Dropdown>
     </Form>
   );

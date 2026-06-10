@@ -1,6 +1,10 @@
+export type SystemType = "E" | "Q" | "P" | "S";
+
 export interface SAPSystem {
   id: string;
+  customerName: string;
   systemId: string;
+  systemType: SystemType;
   applicationServer: string;
   instanceNumber: string;
   client: string;
@@ -11,7 +15,9 @@ export interface SAPSystem {
 }
 
 export interface SAPSystemFormValues {
+  customerName: string;
   systemId: string;
+  systemType: SystemType;
   applicationServer: string;
   instanceNumber: string;
   client: string;

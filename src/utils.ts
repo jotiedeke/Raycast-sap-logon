@@ -1,11 +1,45 @@
 import { LocalStorage, environment } from "@raycast/api";
-import { SAPSystem } from "./types";
+import { SAPSystem, SystemType } from "./types";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 
 const SYSTEMS_KEY = "sap-systems";
 const ENCRYPTION_KEY_STORAGE = "sap-encryption-key";
+
+export const SYSTEM_TYPES: SystemType[] = ["E", "Q", "P", "S"];
+
+export const SYSTEM_TYPE_LABELS: Record<SystemType, string> = {
+  E: "Entwicklung",
+  Q: "Qualitätssicherung",
+  P: "Produktiv",
+  S: "Sonstiges",
+};
+
+function isSystemType(value: unknown): value is SystemType {
+  return value === "E" || value === "Q" || value === "P" || value === "S";
+}
+
+export interface LanguageOption {
+  value: string;
+  title: string;
+}
+
+// Languages offered in the forms and in the connect-time language picker.
+export const LANGUAGES: LanguageOption[] = [
+  { value: "EN", title: "English (EN)" },
+  { value: "DE", title: "German (DE)" },
+  { value: "FR", title: "French (FR)" },
+  { value: "ES", title: "Spanish (ES)" },
+  { value: "IT", title: "Italian (IT)" },
+  { value: "PT", title: "Portuguese (PT)" },
+  { value: "NL", title: "Dutch (NL)" },
+  { value: "PL", title: "Polish (PL)" },
+  { value: "RU", title: "Russian (RU)" },
+  { value: "ZH", title: "Chinese (ZH)" },
+  { value: "JA", title: "Japanese (JA)" },
+  { value: "KO", title: "Korean (KO)" },
+];
 
 let cachedEncryptionKey: Buffer | null = null;
 let keyInitPromise: Promise<Buffer> | null = null;
@@ -75,7 +109,11 @@ export async function decryptPassword(encryptedPassword: string): Promise<string
   }
 }
 
-function isValidSAPSystem(obj: unknown): obj is SAPSystem {
+// Validates the fields that have existed since the first version. The newer
+// fields (customerName, systemType) are intentionally NOT required here so that
+// systems stored before they existed are not silently dropped — they get
+// sensible defaults during the migration step in getSAPSystems().
+function isValidStoredSystem(obj: unknown): obj is Record<string, unknown> {
   if (typeof obj !== "object" || obj === null) return false;
   const system = obj as Record<string, unknown>;
   return (
@@ -91,13 +129,23 @@ function isValidSAPSystem(obj: unknown): obj is SAPSystem {
   );
 }
 
+// Fill in fields added in later versions so the rest of the app can assume they
+// are always present.
+function migrateStoredSystem(system: Record<string, unknown>): SAPSystem {
+  return {
+    ...(system as unknown as SAPSystem),
+    customerName: typeof system.customerName === "string" ? system.customerName : "",
+    systemType: isSystemType(system.systemType) ? system.systemType : "P",
+  };
+}
+
 export async function getSAPSystems(): Promise<SAPSystem[]> {
   const systemsJson = await LocalStorage.getItem<string>(SYSTEMS_KEY);
   if (!systemsJson) return [];
   try {
     const parsed = JSON.parse(systemsJson);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isValidSAPSystem);
+    return parsed.filter(isValidStoredSystem).map(migrateStoredSystem);
   } catch {
     return [];
   }
@@ -105,6 +153,38 @@ export async function getSAPSystems(): Promise<SAPSystem[]> {
 
 export async function saveSAPSystems(systems: SAPSystem[]): Promise<void> {
   await LocalStorage.setItem(SYSTEMS_KEY, JSON.stringify(systems));
+}
+
+const SYSTEM_TYPE_ORDER: Record<SystemType, number> = { E: 0, Q: 1, P: 2, S: 3 };
+
+// Group systems by customer (alphabetically), with systems inside each customer
+// ordered E → Q → P. Systems without a customer name are collected under a
+// fallback heading at the end.
+export function groupSystemsByCustomer(systems: SAPSystem[]): { customerName: string; systems: SAPSystem[] }[] {
+  const groups = new Map<string, SAPSystem[]>();
+  for (const system of systems) {
+    const key = system.customerName.trim() || "Ungrouped";
+    const bucket = groups.get(key);
+    if (bucket) {
+      bucket.push(system);
+    } else {
+      groups.set(key, [system]);
+    }
+  }
+
+  return Array.from(groups.entries())
+    .sort(([a], [b]) => {
+      if (a === "Ungrouped") return 1;
+      if (b === "Ungrouped") return -1;
+      return a.localeCompare(b);
+    })
+    .map(([customerName, customerSystems]) => ({
+      customerName,
+      systems: customerSystems.sort(
+        (a, b) =>
+          SYSTEM_TYPE_ORDER[a.systemType] - SYSTEM_TYPE_ORDER[b.systemType] || a.systemId.localeCompare(b.systemId),
+      ),
+    }));
 }
 
 export async function getPassword(systemId: string): Promise<string> {
@@ -183,12 +263,18 @@ function encodeSAPValue(value: string): string {
   return value.replace(/&/g, "%26").replace(/=/g, "%3D");
 }
 
-export async function createAndOpenSAPCFile(system: SAPSystem): Promise<string> {
+export async function createAndOpenSAPCFile(system: SAPSystem, languageOverride?: string): Promise<string> {
   const password = await getPassword(system.id);
 
+  // A language passed at connect time wins over the (possibly empty) stored one.
+  const language = (languageOverride ?? system.language).trim();
+
   // Build the connection string with encoded values
-  // Format: conn=/H/{application server}/S/32{instance number}&user={username}&lang={language}&client={client}&pass={password}
-  const connectionString = `conn=/H/${encodeSAPValue(system.applicationServer)}/S/32${encodeSAPValue(system.instanceNumber)}&user=${encodeSAPValue(system.username)}&lang=${encodeSAPValue(system.language)}&clnt=${encodeSAPValue(system.client)}&pass=${encodeSAPValue(password)}`;
+  // Format: conn=/H/{application server}/S/32{instance number}&user={username}&lang={language}&clnt={client}&pass={password}
+  // The lang parameter is omitted entirely when no language is set, so the SAP
+  // GUI falls back to its own language selection.
+  const langPart = language ? `&lang=${encodeSAPValue(language)}` : "";
+  const connectionString = `conn=/H/${encodeSAPValue(system.applicationServer)}/S/32${encodeSAPValue(system.instanceNumber)}&user=${encodeSAPValue(system.username)}${langPart}&clnt=${encodeSAPValue(system.client)}&pass=${encodeSAPValue(password)}`;
 
   // Use Raycast's support path for temp files (more appropriate than os.tmpdir)
   const tempDir = path.join(environment.supportPath, "sapc-files");
